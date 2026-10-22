@@ -31,7 +31,7 @@ Optional desktop launcher:
 
 With no argument it reopens the folder you used last. Otherwise click **Open folder…**.
 
-- **Libraries (left):** one checkbox per `.json5` file, with an `enabled/total` count. **All** and **None** tick or untick everything. The track list shows only ticked libraries.
+- **Libraries (left):** one checkbox per `.json5` file, with an `enabled/total` count. **All** and **None** tick or untick everything. The track list shows only ticked libraries. The panel can be collapsed with the sidebar button at the left of the header bar (or **F9**); the app remembers whether it was open.
 - **Tracks (right):** each row has an on/off checkbox, title, author, uses, library and group. Click a column header to sort. The filter box matches title, author, uses and group. **Enable shown** and **Disable shown** act on whatever the filter currently displays.
 - **Target folder…** chooses where to save. **Save…** writes every ticked library to that folder under its original filename, with `enabled: true/false` set on each track. It asks before overwriting existing files, including when the target is the source folder, and warns if you close with unsaved changes.
 

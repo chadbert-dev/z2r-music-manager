@@ -307,6 +307,10 @@ class Window(Gtk.ApplicationWindow):
         # header bar
         hb = Gtk.HeaderBar()
         self.set_titlebar(hb)
+        self.side_btn = Gtk.ToggleButton(icon_name="sidebar-show-symbolic", tooltip_text="Show/hide libraries (F9)",
+                                         active=self.cfg.get("sidebar", True))
+        self.side_btn.connect("toggled", self.on_side_toggled)
+        hb.pack_start(self.side_btn)
         b = Gtk.Button(label="Open folder…")
         b.connect("clicked", lambda *_: self.pick_folder("Library folder", self.set_source, self.source))
         hb.pack_start(b)
@@ -334,6 +338,8 @@ class Window(Gtk.ApplicationWindow):
         sw.set_child(self.lib_list)
         side.append(sw)
         side.set_size_request(260, -1)
+        self.side = side
+        side.set_visible(self.side_btn.get_active())
 
         # track table
         self.search = Gtk.SearchEntry(placeholder_text="Filter by title, author or use…", hexpand=True)
@@ -362,6 +368,11 @@ class Window(Gtk.ApplicationWindow):
 
         paned = Gtk.Paned(start_child=side, end_child=main, position=270, shrink_start_child=False)
         self.set_child(paned)
+        keys = Gtk.ShortcutController(scope=Gtk.ShortcutScope.GLOBAL)
+        keys.add_shortcut(Gtk.Shortcut(trigger=Gtk.ShortcutTrigger.parse_string("F9"),
+                                       action=Gtk.CallbackAction.new(lambda *_: self.side_btn.set_active(
+                                           not self.side_btn.get_active()) or True)))
+        self.add_controller(keys)
         self.connect("close-request", self.on_close)
 
         src = source or self.cfg.get("source")
@@ -486,6 +497,11 @@ class Window(Gtk.ApplicationWindow):
         elif not self.libs:
             self.alert("No libraries found", f"No .json5 files in {path}")
 
+    def on_side_toggled(self, btn):
+        self.side.set_visible(btn.get_active())
+        self.cfg["sidebar"] = btn.get_active()
+        save_config(self.cfg)
+
     def on_lib_toggled(self, lib, cb):
         lib.selected = cb.get_active()
         self.schedule_settings()
@@ -588,7 +604,8 @@ class App(Gtk.Application):
         self.source = source
 
     def do_activate(self):
-        Window(self, self.source).present()
+        win = self.props.active_window or Window(self, self.source)
+        win.present()
 
 
 if __name__ == "__main__":
