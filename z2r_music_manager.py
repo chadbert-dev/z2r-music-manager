@@ -300,6 +300,7 @@ class Window(Gtk.ApplicationWindow):
         self.target = self.cfg.get("target")
         self.dirty = False
         self.save_id = None
+        self.bulk = False  # True while a bulk change runs; per-item handlers skip their refresh
         self.store = Gio.ListStore.new(Track)
         self.filter = Gtk.CustomFilter.new(self.match)
         self.filtered = Gtk.FilterListModel(model=self.store, filter=self.filter)
@@ -436,14 +437,25 @@ class Window(Gtk.ApplicationWindow):
         return [self.filtered.get_item(i) for i in range(self.filtered.get_n_items())]
 
     def set_shown(self, val):
-        for t in self.shown():
-            t.props.enabled = val
+        self.bulk = True
+        try:
+            for t in self.shown():
+                t.props.enabled = val
+        finally:
+            self.bulk = False
         self.dirty = True
+        self.schedule_settings()
         self.update_status()
 
     def select_libs(self, val):
-        for lib, cb in self.lib_checks:
-            cb.set_active(val)
+        self.bulk = True
+        try:
+            for lib, cb in self.lib_checks:
+                cb.set_active(val)
+        finally:
+            self.bulk = False
+        self.schedule_settings()
+        self.refilter()
 
     def update_status(self):
         sel = [l for l in self.libs if l.selected]
@@ -504,10 +516,14 @@ class Window(Gtk.ApplicationWindow):
 
     def on_lib_toggled(self, lib, cb):
         lib.selected = cb.get_active()
+        if self.bulk:
+            return
         self.schedule_settings()
         self.refilter()
 
     def on_track_toggled(self, *_):
+        if self.bulk:
+            return
         self.dirty = True
         self.schedule_settings()
         self.update_status()
