@@ -1,6 +1,6 @@
 # Z2R Music Manager
 
-A small GTK 4 app for managing [Zelda II Randomizer](https://github.com/Ellendar/Z2Randomizer) custom music libraries. It loads every `.json5` library in a folder, lets you pick which libraries to look through and which tracks are enabled, and saves copies of the libraries with the right `enabled` flags into another folder.
+A small GTK 4 app for managing [Zelda II Randomizer](https://github.com/Ellendar/Z2Randomizer) custom music libraries. It loads every `.json5` library in a folder, lets you pick which libraries to look through and which tracks are enabled, and saves the enabled songs from the ticked libraries as a single `SelectedMusic.json5` in another folder.
 
 ## Requirements
 
