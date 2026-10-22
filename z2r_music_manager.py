@@ -4,6 +4,7 @@
 Needs only python3 + PyGObject (GTK 4.10+). Run: ./z2r_music_manager.py [source_dir]
 """
 import collections
+import copy
 import json
 import os
 import re
@@ -15,6 +16,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, GObject, Gtk  # noqa: E402
 
 CONFIG = os.path.join(GLib.get_user_config_dir(), "z2r-music-manager.json")
+SELECTED_NAME = "SelectedMusic.json5"  # Save output; skipped when loading so it never shows up as a library
 SETTINGS_NAME = "z2r-music-manager.settings.json"  # lives in the music folder; not a .json5, so never loaded as a library
 
 
@@ -267,16 +269,27 @@ class Library:
     def enabled_count(self):
         return sum(t.props.enabled for t in self.tracks)
 
-    def dump(self):
-        """Library json5 with every track's enabled flag set explicitly."""
-        for t in self.tracks:
-            t.raw["enabled"] = bool(t.props.enabled)
+    def export_enabled(self):
+        """(singles, groups) holding only enabled tracks, with edited uses applied. Does not modify the library."""
+        enabled = {id(t.raw): t for t in self.tracks if t.props.enabled}
+
+        def prep(raw):
+            r = copy.deepcopy(raw)
+            r.pop("enabled", None)  # everything exported is enabled; a stale false must not veto it
+            t = enabled[id(raw)]
             if t.uses_changed:
-                t.raw["uses"] = list(t.use_list)
+                r["uses"] = list(t.use_list)
+            return r
+
+        singles = [prep(r) for r in self.data.get("single", []) if id(r) in enabled]
+        groups = []
         for g in self.data.get("groups", []):
-            if "enabled" in g:  # keep a group-level flag from vetoing enabled items
-                g["enabled"] = any(i.get("enabled", True) for i in g.get("items", []))
-        return json5_dumps(self.data) + "\n"
+            items = [prep(r) for r in g.get("items", []) if id(r) in enabled]
+            if items:
+                ng = {k: v for k, v in g.items() if k not in ("items", "enabled")}
+                ng["items"] = items
+                groups.append(ng)
+        return singles, groups
 
 
 # ------------------------------------------------------------- settings ----
@@ -355,7 +368,8 @@ class Window(Gtk.ApplicationWindow):
         hb.pack_start(b)
         self.src_label = Gtk.Label(label="No folder loaded", xalign=0, ellipsize=3)
         hb.pack_start(self.src_label)
-        self.save_btn = Gtk.Button(label="Save…", css_classes=["suggested-action"])
+        self.save_btn = Gtk.Button(label="Save…", css_classes=["suggested-action"],
+                                  tooltip_text="Write all enabled songs from the ticked libraries to SelectedMusic.json5 in the target folder")
         self.save_btn.connect("clicked", self.on_save)
         hb.pack_end(self.save_btn)
         self.tgt_btn = Gtk.Button(label="Target folder…")
@@ -602,7 +616,7 @@ class Window(Gtk.ApplicationWindow):
         self.libs, errors = [], []
         self.store.remove_all()
         for name in sorted(os.listdir(path), key=str.lower):
-            if name.lower().endswith(".json5"):
+            if name.lower().endswith(".json5") and name != SELECTED_NAME:
                 try:
                     self.libs.append(Library(os.path.join(path, name)))
                 except (OSError, ValueError, KeyError, IndexError) as e:
@@ -689,29 +703,43 @@ class Window(Gtk.ApplicationWindow):
         sel = [l for l in self.libs if l.selected]
         if not sel:
             return self.alert("Nothing to save", "Tick at least one library.")
+        if not any(t.props.enabled for l in sel for t in l.tracks):
+            return self.alert("Nothing to save", "No songs are enabled in the ticked libraries.")
         if not self.target:
             return self.pick_folder("Save to folder", lambda p: (self.set_target(p), self.on_save()), None)
-        same = os.path.realpath(self.target) == os.path.realpath(self.source or "")
-        existing = [l.name for l in sel if os.path.exists(os.path.join(self.target, l.name))]
-        if same or existing:
-            msg = ("The target is the source folder; this overwrites the originals." if same
-                   else "These files already exist and will be overwritten:\n" + "\n".join(existing))
-            d = Gtk.AlertDialog(message="Overwrite files?", detail=msg, buttons=["Cancel", "Overwrite"],
-                                cancel_button=0, default_button=0)
+        out = os.path.join(self.target, SELECTED_NAME)
+        if os.path.exists(out):
+            d = Gtk.AlertDialog(message="Replace SelectedMusic.json5?", detail=f"{out} already exists.",
+                                buttons=["Cancel", "Replace"], cancel_button=0, default_button=0)
             d.choose(self, None, lambda dlg, res: dlg.choose_finish(res) == 1 and self.do_save(sel))
         else:
             self.do_save(sel)
 
     def do_save(self, sel):
+        singles, groups, libs = [], [], 0
+        for lib in sel:
+            sg, gr = lib.export_enabled()
+            if sg or gr:
+                libs += 1
+            singles += sg
+            groups += gr
+        count = len(singles) + sum(len(g["items"]) for g in groups)
+        data = {}
+        if singles:
+            data["single"] = singles
+        if groups:
+            data["groups"] = groups
+        out = os.path.join(self.target, SELECTED_NAME)
         try:
             os.makedirs(self.target, exist_ok=True)
-            for lib in sel:
-                with open(os.path.join(self.target, lib.name), "w", encoding="utf-8") as f:
-                    f.write(lib.dump())
+            with open(out + ".tmp", "w", encoding="utf-8") as f:
+                f.write(f"// Generated by Z2R Music Manager: {count} songs from {libs} librar{'y' if libs == 1 else 'ies'}\n")
+                f.write(json5_dumps(data) + "\n")
+            os.replace(out + ".tmp", out)
         except OSError as e:
             return self.alert("Save failed", str(e))
         self.dirty = False
-        self.alert("Saved", f"Wrote {len(sel)} librar{'y' if len(sel) == 1 else 'ies'} to {self.target}")
+        self.alert("Saved", f"Wrote {count} songs from {libs} librar{'y' if libs == 1 else 'ies'} to {out}")
 
     def on_close(self, *_):
         self.flush_settings()
