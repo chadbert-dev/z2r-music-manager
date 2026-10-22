@@ -197,15 +197,16 @@ DEFAULT_USES = ["Palace", "GreatPalace"]
 
 
 def canon_uses(items):
-    """Dedupe case-insensitively; Z2R categories first (canonical spelling/order), unknown ones kept after."""
+    """Valid Z2R categories only: deduped case-insensitively, in Z2R order, canonical spelling.
+    Z2R refuses to load a library containing any other name, so unknown ones are ignored."""
     known = {u.lower(): u for u in USES}
-    seen, ours, extra = set(), [], []
-    for u in items:
-        k = str(u).lower()
-        if k not in seen:
-            seen.add(k)
-            (ours if k in known else extra).append(known.get(k, str(u)))
-    return sorted(ours, key=USES.index) + extra
+    have = {known[str(u).lower()] for u in items or [] if str(u).lower() in known}
+    return [u for u in USES if u in have]
+
+
+def count_invalid_uses(items):
+    known = {u.lower() for u in USES}
+    return sum(1 for u in items if str(u).lower() not in known) if isinstance(items, list) else 0
 
 
 class Track(GObject.Object):
@@ -221,9 +222,12 @@ class Track(GObject.Object):
         self.raw, self.parent_raw = raw, parent_raw
         self.library_obj = library
         eff = raw.get("enabled", (parent_raw or {}).get("enabled", True))
-        src = raw.get("uses", (parent_raw or {}).get("uses"))
-        self.orig_default = not (isinstance(src, list) and src)  # no uses anywhere: Z2R falls back to defaults
-        self.orig_uses = canon_uses(DEFAULT_USES if self.orig_default else src)
+        # Own valid uses, else the group's, else Z2R's defaults (what Z2R does once invalid names are dropped)
+        own = canon_uses(raw.get("uses")) if isinstance(raw.get("uses"), list) else []
+        inherited = canon_uses((parent_raw or {}).get("uses")) if isinstance((parent_raw or {}).get("uses"), list) else []
+        self.orig_default = not (own or inherited)
+        self.orig_uses = own or inherited or list(DEFAULT_USES)
+        self.had_invalid = count_invalid_uses(raw.get("uses")) > 0
         self.use_list = list(self.orig_uses)
         self.props.enabled = bool(eff)
         self.props.title = str(raw.get("title", ""))
@@ -260,6 +264,10 @@ class Library:
         if not self.tracks and "single" not in self.data and "groups" not in self.data:
             raise Json5Error("no 'single' or 'groups' (not a music library)")
         self.selected = True
+        self.invalid_uses = sum(count_invalid_uses(r.get("uses")) for r in self.data.get("single", []))
+        for g in self.data.get("groups", []):
+            self.invalid_uses += count_invalid_uses(g.get("uses")) + sum(
+                count_invalid_uses(r.get("uses")) for r in g.get("items", []))
         seen = collections.Counter()
         for t in self.tracks:
             base = f"{t.props.group}|{t.props.title}"
@@ -273,10 +281,20 @@ class Library:
         """(singles, groups) holding only enabled tracks, with edited uses applied. Does not modify the library."""
         enabled = {id(t.raw): t for t in self.tracks if t.props.enabled}
 
+        def clean_uses(r):
+            """Drop uses Z2R doesn't allow; with none left, remove the key so the group's/default apply."""
+            if "uses" in r:
+                valid = canon_uses(r["uses"]) if isinstance(r["uses"], list) else []
+                if valid:
+                    r["uses"] = valid
+                else:
+                    del r["uses"]
+
         def prep(raw):
             r = copy.deepcopy(raw)
             r.pop("enabled", None)  # everything exported is enabled; a stale false must not veto it
             t = enabled[id(raw)]
+            clean_uses(r)
             if t.uses_changed:
                 r["uses"] = list(t.use_list)
             return r
@@ -287,6 +305,7 @@ class Library:
             items = [prep(r) for r in g.get("items", []) if id(r) in enabled]
             if items:
                 ng = {k: v for k, v in g.items() if k not in ("items", "enabled")}
+                clean_uses(ng)
                 ng["items"] = items
                 groups.append(ng)
         return singles, groups
@@ -505,7 +524,7 @@ class Window(Gtk.ApplicationWindow):
             tr.set_use_list([n for n, c in checks.items() if c.get_active()])
             refresh()
 
-        for n in USES + [u for u in tr.use_list if u not in USES]:
+        for n in USES:
             c = Gtk.CheckButton(label=n, active=n in tr.use_list)
             c.connect("toggled", toggled, n)
             checks[n] = c
@@ -603,8 +622,10 @@ class Window(Gtk.ApplicationWindow):
         on = sum(l.enabled_count() for l in sel)
         tot = sum(len(l.tracks) for l in sel)
         tgt = self.target or "(not chosen)"
+        bad = sum(l.invalid_uses for l in sel)
+        note = f" · {bad} invalid uses ignored" if bad else ""
         self.status.set_label(f"{len(sel)}/{len(self.libs)} libraries · {self.filtered.get_n_items()} tracks shown · "
-                              f"{on}/{tot} enabled · save target: {tgt}")
+                              f"{on}/{tot} enabled{note} · save target: {tgt}")
         for lib, cb in getattr(self, "lib_checks", []):
             cb.set_label(f"{lib.name}  ({lib.enabled_count()}/{len(lib.tracks)})")
 
