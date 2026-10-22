@@ -187,6 +187,25 @@ def json5_dumps(v, depth=0):
 
 
 # ---------------------------------------------------------------- model ----
+# Z2R's `Usage` enum (RandomizerCore/Music.cs). Songs with no uses of their own inherit their
+# group's uses, else the defaults below.
+USES = ["Title", "Overworld", "Town", "Encounter", "Cave", "Palace", "GreatPalace", "Boss", "LastBoss",
+        "Credits", "GameComplete", "House", "PalaceClear"]
+DEFAULT_USES = ["Palace", "GreatPalace"]
+
+
+def canon_uses(items):
+    """Dedupe case-insensitively; Z2R categories first (canonical spelling/order), unknown ones kept after."""
+    known = {u.lower(): u for u in USES}
+    seen, ours, extra = set(), [], []
+    for u in items:
+        k = str(u).lower()
+        if k not in seen:
+            seen.add(k)
+            (ours if k in known else extra).append(known.get(k, str(u)))
+    return sorted(ours, key=USES.index) + extra
+
+
 class Track(GObject.Object):
     enabled = GObject.Property(type=bool, default=True)
     title = GObject.Property(type=str, default="")
@@ -200,15 +219,29 @@ class Track(GObject.Object):
         self.raw, self.parent_raw = raw, parent_raw
         self.library_obj = library
         eff = raw.get("enabled", (parent_raw or {}).get("enabled", True))
-        uses = raw.get("uses", (parent_raw or {}).get("uses", []))
+        src = raw.get("uses", (parent_raw or {}).get("uses"))
+        self.orig_default = not (isinstance(src, list) and src)  # no uses anywhere: Z2R falls back to defaults
+        self.orig_uses = canon_uses(DEFAULT_USES if self.orig_default else src)
+        self.use_list = list(self.orig_uses)
         self.props.enabled = bool(eff)
         self.props.title = str(raw.get("title", ""))
         self.props.author = str(raw.get("author", (parent_raw or {}).get("author", "")) or "")
-        self.props.uses = ", ".join(uses) if isinstance(uses, list) else str(uses)
+        self.props.uses = self.uses_text()
         self.props.library = library.name
         self.props.group = str((parent_raw or {}).get("title", ""))
         self.orig_enabled = self.props.enabled  # state in the file on disk
         self.key = ""  # stable id within the library, set by Library
+
+    @property
+    def uses_changed(self):
+        return self.use_list != self.orig_uses
+
+    def uses_text(self):
+        return ", ".join(self.use_list) + (" (default)" if self.orig_default and not self.uses_changed else "")
+
+    def set_use_list(self, items):
+        self.use_list = canon_uses(items)
+        self.props.uses = self.uses_text()
 
 
 class Library:
@@ -238,6 +271,8 @@ class Library:
         """Library json5 with every track's enabled flag set explicitly."""
         for t in self.tracks:
             t.raw["enabled"] = bool(t.props.enabled)
+            if t.uses_changed:
+                t.raw["uses"] = list(t.use_list)
         for g in self.data.get("groups", []):
             if "enabled" in g:  # keep a group-level flag from vetoing enabled items
                 g["enabled"] = any(i.get("enabled", True) for i in g.get("items", []))
@@ -254,6 +289,7 @@ def settings_dump(libs, target):
             lib.name: {
                 "selected": lib.selected,
                 "tracks": {t.key: bool(t.props.enabled) for t in lib.tracks if bool(t.props.enabled) != t.orig_enabled},
+                "uses": {t.key: list(t.use_list) for t in lib.tracks if t.uses_changed},
             } for lib in libs
         },
     }
@@ -267,10 +303,12 @@ def settings_apply(libs, data):
         if not isinstance(ls, dict):
             continue
         lib.selected = bool(ls.get("selected", True))
-        over = ls.get("tracks", {})
+        over, uses = ls.get("tracks", {}), ls.get("uses", {})
         for t in lib.tracks:
             if t.key in over:
                 t.props.enabled = bool(over[t.key])
+            if isinstance(uses.get(t.key), list):
+                t.set_use_list(uses[t.key])
 
 
 # ------------------------------------------------------------------ gui ----
@@ -351,13 +389,15 @@ class Window(Gtk.ApplicationWindow):
             bb = Gtk.Button(label=text)
             bb.connect("clicked", lambda _b, v=val: self.set_shown(v))
             tools.append(bb)
+        tools.append(self.bulk_uses_menu("Add use…", True))
+        tools.append(self.bulk_uses_menu("Remove use…", False))
 
         self.view = Gtk.ColumnView(show_row_separators=True, show_column_separators=True)
         self.view.set_model(Gtk.NoSelection(model=self.filtered))
         self.add_check_column()
         self.add_text_column("Title", "title", 340)
         self.add_text_column("Author", "author", 140)
-        self.add_text_column("Uses", "uses", 220)
+        self.add_uses_column(220)
         self.add_text_column("Library", "library", 160)
         self.add_text_column("Group", "group", 140)
         vsw = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
@@ -405,6 +445,93 @@ class Window(Gtk.ApplicationWindow):
         f.connect("bind", bind)
         f.connect("unbind", unbind)
         self.view.append_column(Gtk.ColumnViewColumn(title="On", factory=f, fixed_width=50))
+
+    def add_uses_column(self, width):
+        f = Gtk.SignalListItemFactory()
+
+        def setup(_f, li):
+            mb = Gtk.MenuButton(has_frame=False, hexpand=True, tooltip_text="Click to edit this song's uses")
+            mb.set_child(Gtk.Label(xalign=0, ellipsize=3))
+            mb.set_create_popup_func(lambda b, _d: b.set_popover(self.build_uses_popover(b.track)), None)
+            li.set_child(mb)
+
+        def bind(_f, li):
+            mb, tr = li.get_child(), li.get_item()
+            mb.track = tr
+            mb.set_popover(None)
+            lab = mb.get_child()
+            lab.set_label(tr.props.uses)
+            li.handler = (tr, tr.connect("notify::uses", lambda t, _p: lab.set_label(t.props.uses)))
+
+        def unbind(_f, li):
+            tr, h = li.handler
+            tr.disconnect(h)
+
+        f.connect("setup", setup)
+        f.connect("bind", bind)
+        f.connect("unbind", unbind)
+        col = Gtk.ColumnViewColumn(title="Uses", factory=f, resizable=True, fixed_width=width)
+        col.set_sorter(Gtk.CustomSorter.new(lambda a, b, _d: (a.props.uses.lower() > b.props.uses.lower())
+                                            - (a.props.uses.lower() < b.props.uses.lower())))
+        self.view.append_column(col)
+
+    def build_uses_popover(self, tr):
+        pop = Gtk.Popover()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_start=10, margin_end=10,
+                      margin_top=8, margin_bottom=8)
+        box.append(Gtk.Label(label="Uses", xalign=0, css_classes=["heading"]))
+        checks = {}
+
+        def refresh():
+            on = [n for n, c in checks.items() if c.get_active()]
+            for c in checks.values():  # a song always keeps at least one use
+                c.set_sensitive(not (len(on) == 1 and c.get_active()))
+
+        def toggled(_c, _n):
+            tr.set_use_list([n for n, c in checks.items() if c.get_active()])
+            refresh()
+
+        for n in USES + [u for u in tr.use_list if u not in USES]:
+            c = Gtk.CheckButton(label=n, active=n in tr.use_list)
+            c.connect("toggled", toggled, n)
+            checks[n] = c
+            box.append(c)
+        refresh()
+        pop.set_child(box)
+        return pop
+
+    def bulk_uses_menu(self, label, add):
+        pop = Gtk.Popover()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_start=6, margin_end=6, margin_top=6, margin_bottom=6)
+        for n in USES:
+            b = Gtk.Button(label=n, has_frame=False, halign=Gtk.Align.FILL)
+            b.get_child().set_xalign(0)
+            b.connect("clicked", lambda _b, n=n: (pop.popdown(), self.bulk_uses(n, add)))
+            box.append(b)
+        pop.set_child(box)
+        return Gtk.MenuButton(label=label, popover=pop,
+                              tooltip_text="Applies to every track currently shown (respects the filter)")
+
+    def bulk_uses(self, name, add):
+        skipped = 0
+        self.bulk = True
+        try:
+            for t in self.shown():
+                have = name in t.use_list
+                if add and not have:
+                    t.set_use_list(t.use_list + [name])
+                elif not add and have:
+                    if len(t.use_list) == 1:  # would leave the song with no uses
+                        skipped += 1
+                    else:
+                        t.set_use_list([u for u in t.use_list if u != name])
+        finally:
+            self.bulk = False
+        self.dirty = True
+        self.schedule_settings()
+        self.refilter()
+        if skipped:
+            self.alert("Some songs were skipped", f"{skipped} song(s) have {name} as their only use, so it was kept.")
 
     def add_text_column(self, title, prop, width):
         f = Gtk.SignalListItemFactory()
@@ -500,9 +627,10 @@ class Window(Gtk.ApplicationWindow):
             self.lib_checks.append((lib, cb))
             for t in lib.tracks:
                 t.connect("notify::enabled", self.on_track_toggled)
+                t.connect("notify::uses", self.on_track_toggled)
                 self.store.append(t)
         self.src_label.set_label(path + ("  (settings restored)" if restored else ""))
-        self.dirty = any(t.props.enabled != t.orig_enabled for l in self.libs for t in l.tracks)
+        self.dirty = any(t.props.enabled != t.orig_enabled or t.uses_changed for l in self.libs for t in l.tracks)
         self.refilter()
         if errors:
             self.alert("Some files were skipped", "\n".join(errors))
