@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Z2R Music Manager
+Comment=Browse and enable/disable tracks in Z2Randomizer music libraries
+Exec=/usr/bin/python3 /home/altair/Work/z2r-music-manager/z2r_music_manager.py
+Icon=audio-x-generic
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupWMClass=local.z2r.musicmanager
