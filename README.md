@@ -23,6 +23,17 @@ Optional desktop launcher:
 1. Edit the `Exec=` line in `z2r-music-manager.desktop` so it points at `z2r_music_manager.py` in your clone.
 2. `cp z2r-music-manager.desktop ~/.local/share/applications/`
 
+### macOS
+
+Not tested by the author. With [Homebrew](https://brew.sh) installed:
+
+```sh
+./macos-setup.sh     # brew install python pygobject3 gtk4 adwaita-icon-theme, then checks GTK 4.10+
+./launch-macos.sh [library_folder]
+```
+
+`launch-macos.sh` runs the app with Homebrew's `python3`; the system Python can't import PyGObject. GTK uses its own folder picker on macOS rather than Finder's, and F9 may be captured by Mission Control (the sidebar button still works).
+
 ## Usage
 
 ```sh
