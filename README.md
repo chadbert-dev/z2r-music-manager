@@ -23,6 +23,33 @@ Optional desktop launcher:
 1. Edit the `Exec=` line in `z2r-music-manager.desktop` so it points at `z2r_music_manager.py` in your clone.
 2. `cp z2r-music-manager.desktop ~/.local/share/applications/`
 
+### Windows (WSL)
+
+Not tested by the author. The app runs as a Linux GUI app inside WSL 2 and shows up in a normal window through WSLg (Windows 11, or Windows 10 with a current WSL).
+
+1. In PowerShell, install a distro that ships **GTK 4.10 or newer**. Ubuntu 24.04 does; Ubuntu 22.04 (GTK 4.6) and Debian 12 (GTK 4.8) are too old and the app won't start on them:
+   ```powershell
+   wsl --install -d Ubuntu-24.04
+   ```
+2. Inside the distro, install the dependencies and clone the repo:
+   ```sh
+   sudo apt update && sudo apt install -y git python3-gi gir1.2-gtk-4.0 adwaita-icon-theme
+   git clone <this repo> z2r-music-manager
+   ```
+   (`adwaita-icon-theme` provides the sidebar button's icon.) To check the GTK version:
+   `python3 -c "import gi; gi.require_version('Gtk','4.0'); from gi.repository import Gtk; print(Gtk.get_major_version(), Gtk.get_minor_version())"`
+3. Start it:
+   ```sh
+   cd z2r-music-manager
+   python3 z2r_music_manager.py
+   ```
+
+**Windows files:** your drives are under `/mnt/c/`, `/mnt/d/`, and so on. You can open a library folder or choose a save target there, for example `/mnt/c/Users/<you>/Z2Randomizer/Music`, so `SelectedMusic.json5` lands straight in Z2R's Music folder. The folder picker is GTK's own and shows the Linux filesystem, so navigate to `/mnt/c/...`, or pass the path on the command line: `python3 z2r_music_manager.py /mnt/c/Users/<you>/Music/z2r`.
+
+**Speed:** reading hundreds of library files across `/mnt/c` is much slower than reading from WSL's own filesystem. If loading a large folder is slow, copy the libraries into your WSL home (for example `~/z2r-libraries`), open that, and only point the save target at `/mnt/c/...`.
+
+**Shortcut:** the `.desktop` launcher is Linux-only. For a Windows shortcut, point it at `wslg.exe -d Ubuntu-24.04 python3 /home/<you>/z2r-music-manager/z2r_music_manager.py` (`wslg.exe` starts a WSL GUI app without a console window; `wsl.exe` also works but leaves a console open).
+
 ### macOS
 
 Not tested by the author. With [Homebrew](https://brew.sh) installed:
