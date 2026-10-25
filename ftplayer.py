@@ -150,7 +150,7 @@ class Renderer:
             self.set_speed(self.song["speed"])
         self.update_groove()
         self.gpos = self.groove
-        self.counter = self.cmp  # first row plays immediately
+        self.counter = self.cmp - self.tempo  # first row plays on the first frame
         self.row_n = 0
         self.skip = 0
         self.pending_jump = None

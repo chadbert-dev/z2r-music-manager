@@ -43,6 +43,31 @@ Hard limits per module: 8192 bytes; no DPCM samples; no expansion chips (includi
 
 `primary_square_chan`: mute each square channel in turn; the one that sounds worse muted is primary.
 
+## Converting an NSF (no FamiTracker module available)
+
+Dn-FamiTracker cannot open NSFs, and rainwarrior's NSF Importer (wine, GUI only) gave results the user did not like.
+Use the repo's own converter instead:
+
+```sh
+python3 tools/nsf2bhop.py game.nsf TRACK --frames 2200 -o song.bin   # TRACK is 0-based; --frames >= song length
+```
+
+How it works: `tools/nsfrip.py` (6502 emulator) runs the NSF's INIT/PLAY, `tools/apusim.py` models the 2A03
+(envelopes, length counters, linear counter, sweep) to get per-frame volume/pitch/duty, and `nsf2bhop.py` re-encodes
+that as a bhop module: one note per register-write note onset, instruments built from the per-frame volume/duty/pitch
+sequences, speed set to the GCD of the onset times, patterns split only where every channel starts a note.
+Pulse 1/2, triangle and noise only; DPCM is dropped. Typical output is 1-3 KB, well under 8 KB.
+
+Always verify: `tools/verify_module.py` (`compare(data, state, total)`, state/total come from
+`nsf2bhop.convert(...)`) plays the module through `ftplayer` and compares every audible frame with the NSF.
+Aim for 0 mismatches. It only proves agreement with our port of bhop, not Z2R's driver, so say so.
+
+Packaging: put songs in a `groups` entry (title = game, author = composer from the .m3u/NSF, `streaming_safe: false`
+for commercial music), item titles like `"00. Title"` from the .m3u, `data` as `deflate:`+base64. Write the file with
+`json5_dumps` from `z2r_music_manager.py`. `primary_square_chan` and `uses` are guesses unless the user decides:
+flag them. NSF limits: only non-bankswitched NSFs are supported by `nsfrip.py` (it raises otherwise); an NSF that
+needs the init-time `$4015`/frame-counter state beyond "all channels enabled" may need `apusim.py` changes.
+
 ## Checks before finishing
 
 - Decode every `data` (`ftplayer.decode_data`), confirm it is under 8192 bytes, and `ftplayer.Module(bytes)` parses it.
