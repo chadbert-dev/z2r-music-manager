@@ -8,6 +8,7 @@ class CPU:
 
     def __init__(self, mem, on_write):
         self.m, self.on_write = mem, on_write
+        self.on_bank = lambda i, v: None
         self.a = self.x = self.y = 0
         self.sp = 0xFD
         self.pc = 0
@@ -26,6 +27,8 @@ class CPU:
             self.m[a & 0x7FF] = v
         elif 0x4000 <= a < 0x4020:
             self.on_write(a, v)
+        elif 0x5FF8 <= a <= 0x5FFF:
+            self.on_bank(a - 0x5FF8, v)
         elif a >= 0x6000 and a < 0x8000:
             self.m[a] = v
 
@@ -263,15 +266,26 @@ class Nsf:
     def run_song(self, song, frames, init_frames=0):
         """-> list (per frame) of dict {reg: value} for writes that frame, plus register file snapshots."""
         mem = bytearray(0x10000)
-        if any(self.banks):
-            raise NotImplementedError("bankswitched NSF")
-        mem[self.load:self.load + len(self.data)] = self.data[:0x10000 - self.load]
+        banked = any(self.banks)
+        if banked:
+            padded = bytes(self.load & 0xFFF) + self.data
+            pages = [padded[i:i + 4096].ljust(4096, b"\0") for i in range(0, len(padded), 4096)]
+
+            def set_bank(i, v):
+                mem[0x8000 + 4096 * i:0x9000 + 4096 * i] = pages[v] if v < len(pages) else bytes(4096)
+
+            for i, b in enumerate(self.banks):
+                set_bank(i, b)
+        else:
+            mem[self.load:self.load + len(self.data)] = self.data[:0x10000 - self.load]
         writes = []
 
         def on_write(a, v):
             writes.append((a, v))
 
         cpu = CPU(mem, on_write)
+        if banked:
+            cpu.on_bank = set_bank
         cpu.a, cpu.x, cpu.y = song, 0, 0
         SENT = 0x0FF0
 

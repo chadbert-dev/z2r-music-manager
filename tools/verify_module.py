@@ -14,11 +14,17 @@ def module_frames(data, nframes):
         out.append(r.frame_params())
         if r.halted:
             break
+    if len(out) < nframes:
+        out += [[(0, 0, 0, False)] * 4] * (nframes - len(out))
     return out
 
 
-def compare(data, state, total):
-    got = module_frames(data, total)
+def compare(data, state, total, loop_start=None):
+    """With loop_start, also checks one extra pass of the loop body."""
+    extra = total - loop_start if loop_start is not None else 0
+    got = module_frames(data, total + extra)
+    state = list(state) + [state[loop_start + i] for i in range(extra)]
+    total += extra
     names = ["pulse1", "pulse2", "tri", "noise"]
     for ch in range(4):
         bad = {"vol": 0, "per": 0, "duty": 0}

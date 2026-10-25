@@ -503,9 +503,10 @@ class Window(Gtk.ApplicationWindow):
             bb.connect("clicked", lambda _b, v=val: self.select_libs(v))
             row.append(bb)
         side.append(row)
-        sw = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        sw = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER, min_content_height=120)
         sw.set_child(self.lib_list)
         side.append(sw)
+        side.append(self.build_stats())
         side.set_size_request(260, -1)
         self.side = side
         side.set_visible(self.side_btn.get_active())
@@ -552,6 +553,41 @@ class Window(Gtk.ApplicationWindow):
             self.set_source(src)
         else:
             self.update_status()
+
+    def build_stats(self):
+        """Panel under the library list: enabled songs per use, with uses that have none highlighted."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_start=12, margin_end=12, margin_top=6,
+                      margin_bottom=8, tooltip_text="Enabled songs in the ticked libraries, per use. "
+                                                    "Uses with no songs are highlighted.")
+        box.append(Gtk.Separator(margin_bottom=6))
+        box.append(Gtk.Label(label="Enabled songs per use", xalign=0, css_classes=["heading"], margin_bottom=2))
+        grid = Gtk.Grid(column_spacing=12, row_spacing=1)
+        self.use_labels = {}
+        for i, name in enumerate(USES):
+            nl, cl = Gtk.Label(label=name, xalign=0, hexpand=True), Gtk.Label(label="0", xalign=1)
+            grid.attach(nl, 0, i, 1, 1)
+            grid.attach(cl, 1, i, 1, 1)
+            self.use_labels[name] = (nl, cl)
+        box.append(grid)
+        return box
+
+    def update_use_stats(self):
+        counts = dict.fromkeys(USES, 0)
+        for lib in self.libs:
+            if lib.selected:
+                for t in lib.tracks:
+                    if t.props.enabled:
+                        for u in t.use_list:
+                            counts[u] += 1
+        for name, (nl, cl) in self.use_labels.items():
+            n = counts[name]
+            cl.set_label(str(n))
+            for lab in (nl, cl):
+                if n:
+                    lab.remove_css_class("error")
+                else:
+                    lab.add_css_class("error")
+            nl.set_tooltip_text(None if n else f"No enabled songs for {name}")
 
     # -- columns
     def add_play_column(self):
@@ -752,6 +788,7 @@ class Window(Gtk.ApplicationWindow):
         note = f" · {bad} invalid uses ignored" if bad else ""
         self.status.set_label(f"{len(sel)}/{len(self.libs)} libraries · {self.filtered.get_n_items()} tracks shown · "
                               f"{on}/{tot} enabled{note} · save target: {tgt}")
+        self.update_use_stats()
         for lib, cb in getattr(self, "lib_checks", []):
             cb.set_label(f"{lib.name}  ({lib.enabled_count()}/{len(lib.tracks)})")
 

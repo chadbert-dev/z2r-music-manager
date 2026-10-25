@@ -62,6 +62,15 @@ Always verify: `tools/verify_module.py` (`compare(data, state, total)`, state/to
 `nsf2bhop.convert(...)`) plays the module through `ftplayer` and compares every audible frame with the NSF.
 Aim for 0 mismatches. It only proves agreement with our port of bhop, not Z2R's driver, so say so.
 
+Whole game at once: `python3 tools/nsf_to_library.py game.nsf playlist.m3u "Game" "Composer" out.json5` (use `--strip` to
+drop a repeated title prefix, `-` as the m3u plus `--count N` when there is no playlist). It prints size, instrument count,
+loop point and any verify mismatches per track, disables songs that end or exceed 8 KB, and warns about DPCM.
+Details worth knowing: bank-switched NSFs work; loops are found automatically from the captured state (a few stray
+frames are tolerated and the loop body is taken from the last pass) and written as a Bxx jump, non-looping songs end with
+a halt; more than 127 distinct instruments forces lossy merging (verify will report mismatches); DPCM is never converted;
+software-envelope engines (Battletoads) produce 10-27 KB songs that do not fit. After conversion, set `uses` by hand
+(Title, Boss, LastBoss, PalaceClear, GameComplete, Credits, Town...) and re-enable one-shot jingles that were disabled.
+
 Packaging: put songs in a `groups` entry (title = game, author = composer from the .m3u/NSF, `streaming_safe: false`
 for commercial music), item titles like `"00. Title"` from the .m3u, `data` as `deflate:`+base64. Write the file with
 `json5_dumps` from `z2r_music_manager.py`. `primary_square_chan` and `uses` are guesses unless the user decides:

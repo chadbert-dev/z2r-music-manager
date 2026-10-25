@@ -95,7 +95,7 @@ class Module:
                 frames = []
                 for f in range(nframes):
                     fa = w(fl + 2 * f)
-                    frames.append([w(fa + 2 * c) for c in range(4)])
+                    frames.append([w(fa + 2 * c) for c in range(5)])
                 self.songs.append({"frames": frames, "rows": d[a + 3], "speed": d[a + 4], "tempo": d[a + 5],
                                    "groove": d[a + 6]})
         if not self.songs:
@@ -140,6 +140,7 @@ class Renderer:
         self.m, self.d = module, module.d
         self.song = module.songs[min(song_index, len(module.songs) - 1)]
         self.ch = [Chan(i) for i in range(4)]
+        self.dp = Chan(4)  # DPCM channel: not played, but its stream carries the song's jump/skip/halt commands
         self.frame_n = 0
         self.nframes = len(self.song["frames"])
         self.rows = self.song["rows"]
@@ -174,7 +175,7 @@ class Renderer:
         self.set_speed(b)
 
     def load_frame(self):
-        for c, ptr in zip(self.ch, self.song["frames"][self.frame_n]):
+        for c, ptr in zip(self.ch + [self.dp], self.song["frames"][self.frame_n]):
             c.ptr, c.delay = ptr, 0
 
     def advance_frame(self):
@@ -204,7 +205,7 @@ class Renderer:
             self.row_n = 0
             self.skip -= 1
             while self.skip:
-                for c in self.ch:
+                for c in self.ch + [self.dp]:
                     self.read_row(c, True)
                 self.row_n += 1
                 self.skip -= 1
@@ -212,7 +213,7 @@ class Renderer:
             self.advance_frame()
             self.row_n = 0
         self.counter -= self.cmp
-        for c in self.ch:
+        for c in self.ch + [self.dp]:
             self.read_row(c)
         self.fix_noise()
         self.update_groove()
