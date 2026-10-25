@@ -11,6 +11,8 @@ On Arch: `sudo pacman -S python-gobject gtk4`. On Debian/Ubuntu: `sudo apt insta
 
 There are no other dependencies. The app includes its own json5 reader and writer.
 
+**Playing songs:** the button at the left of each row plays that song and turns into a stop button while it plays. The songs are FamiTracker modules for the [bhop](https://github.com/TheRealQuantam/bhop) NES music driver, so the app contains its own small player for them (two pulse channels, triangle and noise; DPCM samples are not played). The audio goes out through GStreamer's Python bindings if you have them (`gir1.2-gst-plugins-base-1.0` on Debian/Ubuntu, usually already there on Arch), otherwise through `mpv`, `ffplay`, `paplay` or `afplay`, whichever is installed. A song is rendered first, so long ones take a few seconds to start. The result is an approximation of the NES sound, not a cycle-accurate emulation.
+
 ## Install
 
 ```sh

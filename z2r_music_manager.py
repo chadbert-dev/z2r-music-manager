@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """Z2R Music Manager: browse json5 music libraries, toggle tracks, save copies.
 
-Needs only python3 + PyGObject (GTK 4.10+). Run: ./z2r_music_manager.py [source_dir]
+Needs only python3 + PyGObject (GTK 4.10+); GStreamer (or mpv/ffplay/paplay) is used to play songs. Run: ./z2r_music_manager.py [source_dir]
 """
 import collections
 import copy
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
+import threading
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, GObject, Gtk  # noqa: E402
+
+import ftplayer  # noqa: E402
 
 CONFIG = os.path.join(GLib.get_user_config_dir(), "z2r-music-manager.json")
 SELECTED_NAME = "SelectedMusic.json5"  # Save output; skipped when loading so it never shows up as a library
@@ -216,6 +221,7 @@ class Track(GObject.Object):
     uses = GObject.Property(type=str, default="")
     library = GObject.Property(type=str, default="")
     group = GObject.Property(type=str, default="")
+    playing = GObject.Property(type=bool, default=False)
 
     def __init__(self, raw, parent_raw, library):
         super().__init__()
@@ -237,6 +243,14 @@ class Track(GObject.Object):
         self.props.group = str((parent_raw or {}).get("title", ""))
         self.orig_enabled = self.props.enabled  # state in the file on disk
         self.key = ""  # stable id within the library, set by Library
+
+    def song_source(self):
+        """(encoded module data, song number) to play, or None. A multi-song entry plays its first song."""
+        data = self.raw.get("data") or (self.parent_raw or {}).get("data")
+        songs = self.raw.get("songs")
+        number = songs[0].get("number", 0) if isinstance(songs, list) and songs and isinstance(songs[0], dict) \
+            else self.raw.get("number", 0)
+        return (data, number) if isinstance(data, str) else None
 
     @property
     def uses_changed(self):
@@ -361,6 +375,86 @@ def save_config(cfg):
         pass
 
 
+class Audio:
+    """Plays a WAV file: GStreamer if PyGObject has it, else the first of mpv/ffplay/paplay/afplay on PATH."""
+    EXTERNAL = (["mpv", "--no-video", "--really-quiet"], ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"],
+                ["paplay"], ["afplay"])
+
+    def __init__(self):
+        self.gst = None
+        try:
+            gi.require_version("Gst", "1.0")
+            from gi.repository import Gst
+            Gst.init(None)
+            if Gst.ElementFactory.find("playbin") and Gst.ElementFactory.find("wavparse"):
+                self.gst = Gst
+        except (ValueError, ImportError, GLib.Error):
+            pass
+        self.pipeline = self.proc = None
+        self.path = None
+
+    def available(self):
+        return bool(self.gst or any(shutil.which(c[0]) for c in self.EXTERNAL))
+
+    def play(self, wav, on_end):
+        """Start playing WAV bytes. on_end(error_or_None) is called when playback finishes by itself."""
+        self.stop()
+        fd, self.path = tempfile.mkstemp(suffix=".wav", prefix="z2r-preview-")
+        with os.fdopen(fd, "wb") as f:
+            f.write(wav)
+        if self.gst:
+            Gst = self.gst
+            pipe = self.pipeline = Gst.ElementFactory.make("playbin")
+            pipe.set_property("uri", Gio.File.new_for_path(self.path).get_uri())
+            bus = pipe.get_bus()
+            bus.add_signal_watch()
+
+            def on_msg(_bus, msg):
+                if pipe is not self.pipeline:
+                    return
+                if msg.type == Gst.MessageType.EOS:
+                    self.stop()
+                    on_end(None)
+                elif msg.type == Gst.MessageType.ERROR:
+                    err = msg.parse_error()[0].message
+                    self.stop()
+                    on_end(err)
+
+            bus.connect("message", on_msg)
+            pipe.set_state(Gst.State.PLAYING)
+            return
+        cmd = next((c for c in self.EXTERNAL if shutil.which(c[0])), None)
+        if not cmd:
+            self.stop()
+            raise OSError("No audio player found (need GStreamer's Python bindings, mpv, ffplay or paplay)")
+        proc = self.proc = Gio.Subprocess.new(cmd + [self.path], Gio.SubprocessFlags.NONE)
+
+        def done(p, res):
+            try:
+                p.wait_finish(res)
+            except GLib.Error:
+                return
+            if proc is self.proc:
+                self.stop()
+                on_end(None)
+
+        proc.wait_async(None, done)
+
+    def stop(self):
+        pipe, proc, path = self.pipeline, self.proc, self.path
+        self.pipeline = self.proc = self.path = None
+        if pipe:
+            pipe.get_bus().remove_signal_watch()
+            pipe.set_state(self.gst.State.NULL)
+        if proc:
+            proc.force_exit()
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 class Window(Gtk.ApplicationWindow):
     def __init__(self, app, source):
         super().__init__(application=app, title="Z2R Music Manager", default_width=1100, default_height=700)
@@ -371,6 +465,9 @@ class Window(Gtk.ApplicationWindow):
         self.dirty = False
         self.save_id = None
         self.bulk = False  # True while a bulk change runs; per-item handlers skip their refresh
+        self.audio = Audio()
+        self.play_track = None  # track being rendered or played
+        self.play_token = None  # identifies the current play request so stale render results are dropped
         self.store = Gio.ListStore.new(Track)
         self.filter = Gtk.CustomFilter.new(self.match)
         self.filtered = Gtk.FilterListModel(model=self.store, filter=self.filter)
@@ -427,6 +524,7 @@ class Window(Gtk.ApplicationWindow):
 
         self.view = Gtk.ColumnView(show_row_separators=True, show_column_separators=True)
         self.view.set_model(Gtk.NoSelection(model=self.filtered))
+        self.add_play_column()
         self.add_check_column()
         self.add_text_column("Title", "title", 340)
         self.add_text_column("Author", "author", 140)
@@ -456,6 +554,34 @@ class Window(Gtk.ApplicationWindow):
             self.update_status()
 
     # -- columns
+    def add_play_column(self):
+        f = Gtk.SignalListItemFactory()
+
+        def setup(_f, li):
+            li.set_child(Gtk.Button(has_frame=False, halign=Gtk.Align.CENTER))
+
+        def show(btn, tr):
+            on = tr.props.playing
+            btn.set_icon_name("media-playback-stop-symbolic" if on else "media-playback-start-symbolic")
+            btn.set_tooltip_text("Stop" if on else "Play")
+
+        def bind(_f, li):
+            btn, tr = li.get_child(), li.get_item()
+            show(btn, tr)
+            h1 = btn.connect("clicked", lambda _b: self.toggle_play(tr))
+            h2 = tr.connect("notify::playing", lambda t, _p: show(btn, t))
+            li.handlers = (btn, h1, tr, h2)
+
+        def unbind(_f, li):
+            btn, h1, tr, h2 = li.handlers
+            btn.disconnect(h1)
+            tr.disconnect(h2)
+
+        f.connect("setup", setup)
+        f.connect("bind", bind)
+        f.connect("unbind", unbind)
+        self.view.append_column(Gtk.ColumnViewColumn(title="Play", factory=f, fixed_width=56))
+
     def add_check_column(self):
         f = Gtk.SignalListItemFactory()
 
@@ -630,6 +756,7 @@ class Window(Gtk.ApplicationWindow):
             cb.set_label(f"{lib.name}  ({lib.enabled_count()}/{len(lib.tracks)})")
 
     def set_source(self, path):
+        self.stop_playback()
         self.flush_settings()
         self.source = path
         self.cfg["source"] = path
@@ -671,6 +798,58 @@ class Window(Gtk.ApplicationWindow):
             self.alert("Some files were skipped", "\n".join(errors))
         elif not self.libs:
             self.alert("No libraries found", f"No .json5 files in {path}")
+
+    # -- playback
+    def toggle_play(self, tr):
+        if tr.props.playing:
+            return self.stop_playback()
+        self.stop_playback()
+        src = tr.song_source()
+        if not src:
+            return self.alert("Can't play this song", "It has no music data.")
+        if not self.audio.available():
+            return self.alert("Can't play audio", "Install PyGObject's GStreamer bindings (gir1.2-gst-plugins-base-1.0) "
+                                                  "or one of mpv, ffplay or paplay.")
+        tr.props.playing = True
+        self.play_track = tr
+        token = self.play_token = object()
+
+        def work():
+            try:
+                data = ftplayer.decode_data(src[0])
+                wav = ftplayer.render_song(data, src[1], lambda: self.play_token is not token)
+            except Exception as e:  # bad data, or cancelled by stop/another song
+                GLib.idle_add(self.play_failed, token, e)
+            else:
+                GLib.idle_add(self.play_ready, token, wav)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def play_ready(self, token, wav):
+        if token is not self.play_token:
+            return
+        try:
+            self.audio.play(wav, lambda err: self.play_ended(token, err))
+        except (OSError, GLib.Error) as e:
+            self.play_failed(token, e)
+
+    def play_failed(self, token, err):
+        if token is self.play_token:
+            self.play_ended(token, str(err))
+
+    def play_ended(self, token, err):
+        if token is not self.play_token:
+            return
+        self.stop_playback()
+        if err:
+            self.alert("Playback failed", str(err))
+
+    def stop_playback(self):
+        self.play_token = None
+        self.audio.stop()
+        if self.play_track:
+            self.play_track.props.playing = False
+            self.play_track = None
 
     def on_side_toggled(self, btn):
         self.side.set_visible(btn.get_active())
@@ -763,6 +942,7 @@ class Window(Gtk.ApplicationWindow):
         self.alert("Saved", f"Wrote {count} songs from {libs} librar{'y' if libs == 1 else 'ies'} to {out}")
 
     def on_close(self, *_):
+        self.stop_playback()
         self.flush_settings()
         if not self.dirty:
             return False
