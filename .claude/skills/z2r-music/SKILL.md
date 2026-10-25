@@ -31,7 +31,7 @@ Valid `uses` (case-insensitive; any other name makes Z2R refuse the whole file):
 
 ## Making the data
 
-1. Open the song in Dn-FamiTracker (NSF import gives an .ftm: File > Import... or open the NSF).
+1. Open the song's .ftm/.dnm in Dn-FamiTracker. It cannot open NSF files (it only writes them), so an NSF has to be turned into a module some other way first.
 2. File > Create NSF... > file type "BIN - Raw music data" > Export.
 3. Encode: plain base64 of the .bin. The existing libraries here use `deflate:` + base64 of raw deflate, which also works:
    ```python
